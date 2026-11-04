@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=62.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "benchguard"
+version = "0.1.0"
+description = "Decide whether a performance measurement was valid, and say why when it was not"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT-0" }
+authors = [{ name = "Manu Nicholas Jacob", email = "manunicholasjacob@gmail.com" }]
+keywords = ["benchmark", "performance", "cgroup", "throttling", "reproducibility", "ci"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Benchmark",
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+benchguard = "benchguard.cli:main"
+
+[project.entry-points.pytest11]
+benchguard = "benchguard.pytest_plugin"
+
+[tool.setuptools.packages.find]
+include = ["benchguard*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

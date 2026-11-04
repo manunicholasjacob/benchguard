@@ -1,0 +1,79 @@
+name: benchguard
+description: >-
+  Run a benchmark and fail the job when the machine state made the number meaningless:
+  CPU quota throttling, thermal throttling, major page faults, or another process
+  competing for the cores.
+author: Manu Nicholas Jacob
+branding:
+  icon: activity
+  color: red
+
+inputs:
+  run:
+    description: The benchmark command to run and judge.
+    required: true
+  threads:
+    description: >-
+      Threads the benchmark uses. Given, the CPU quota is checked against it, since a thread
+      count above the quota is the configuration that produces throttling.
+    required: false
+  strict:
+    description: >-
+      Fail when a check could not be made, not only when one fails. A runner without cgroup v2
+      has not proved its measurement was unthrottled, it has failed to look.
+    required: false
+    default: "false"
+  warn-only:
+    description: Annotate the job but do not fail it. Useful for a first run on a new runner.
+    required: false
+    default: "false"
+  competing-fraction:
+    description: Share of machine busy time allowed to belong to other processes.
+    required: false
+    default: "0.10"
+  record:
+    description: Path to write the provenance record to. Empty to skip.
+    required: false
+    default: benchguard.json
+
+outputs:
+  valid:
+    description: "true when the measurement is usable"
+    value: ${{ steps.guard.outputs.valid }}
+  summary:
+    description: One-line verdict.
+    value: ${{ steps.guard.outputs.summary }}
+  record:
+    description: Path of the provenance record, when one was written.
+    value: ${{ steps.guard.outputs.record }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install benchguard
+      shell: bash
+      run: python -m pip install --quiet --disable-pip-version-check "${{ github.action_path }}"
+
+    - name: Run and judge
+      id: guard
+      shell: bash
+      run: |
+        set +e
+        args=(run)
+        [ -n "${{ inputs.threads }}" ] && args+=(--threads "${{ inputs.threads }}")
+        [ "${{ inputs.strict }}" = "true" ] && args+=(--strict)
+        [ -n "${{ inputs.record }}" ] && args+=(--json "${{ inputs.record }}")
+        args+=(--competing-fraction "${{ inputs.competing-fraction }}")
+        benchguard "${args[@]}" -- bash -c "${{ inputs.run }}"
+        code=$?
+        echo "record=${{ inputs.record }}" >> "$GITHUB_OUTPUT"
+        # 90 and 91 are benchguard's own verdicts; anything else is the benchmark's exit code
+        if [ "$code" -eq 90 ] || [ "$code" -eq 91 ]; then
+          echo "valid=false" >> "$GITHUB_OUTPUT"
+          echo "summary=the measurement ran but its machine state invalidates it" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.warn-only }}" = "true" ]; then exit 0; fi
+          exit "$code"
+        fi
+        echo "valid=true" >> "$GITHUB_OUTPUT"
+        echo "summary=measurement valid" >> "$GITHUB_OUTPUT"
+        exit "$code"

@@ -1,0 +1,106 @@
+# benchguard
+
+Decide whether a performance measurement was valid, and say why when it was not.
+
+A benchmark number is a claim about code. It is only that if the machine held still while the
+number was taken. When it did not, the result is a claim about the machine, and nothing in the
+usual toolchain tells you which one you have: the run completes, the variance looks ordinary,
+and the number gets believed.
+
+benchguard samples the machine **around** a measurement, not before it, and fails when something
+moved that invalidates the result.
+
+```python
+from benchguard import guard
+
+with guard(threads=4) as g:
+    result = run_benchmark()
+
+if not g.verdict.ok():
+    raise SystemExit(g.verdict.summary())
+```
+
+```bash
+benchguard run --threads 4 -- ./my-benchmark      # exit 90 if the number is untrustworthy
+benchguard sample                                 # what can this machine even report?
+```
+
+```yaml
+- uses: manunicholasjacob/benchguard@v0
+  with:
+    run: pytest tests/benchmarks -q
+    threads: 4
+    strict: true
+```
+
+No runtime dependencies. Python 3.9 and up.
+
+## What it checks, and why each one is here
+
+Each check exists because its absence produced a wrong number in a real study. The magnitudes
+are measured, not illustrative.
+
+| Check | Fails when | Why that number |
+|---|---|---|
+| **CPU quota throttling** | `cpu.stat` `throttled_usec` rose during the measurement | A binding CPU quota costs about 50% of throughput on Cortex-A76 and about 64% on x86, and the throttle counters rise monotonically with the loss. A non-zero delta is not a risk of an effect, it is the effect. |
+| **Quota against threads** | the thread count exceeds the quota in cores | This is the configuration that produces the throttling above, so it turns "it was throttled" into "it was throttled because you asked for more threads than cores". |
+| **Thermal throttling** | core or package throttle counters rose | Self-evident once seen, and invisible otherwise. |
+| **Major page faults** | the process took any during the measurement | A run that took 11,404 major faults on a 272,000-page model was timing the page cache, not the model, and the wall-clock variance did not show it. |
+| **Competing load** | more than 10% of machine busy time belonged to other processes | A phone left idle and charging ran background application compilation during a measurement, cost 32% of a memory-bandwidth ceiling, and **every scatter-based health check on that run passed**. Load average cannot see this; it is a decayed average. The process table can. |
+| **Scaling governor** | cores disagree, or it is not pinned | A 37.5% clock cut cost 29 to 39%, so an unpinned clock makes the result a property of the scheduler. |
+
+## Three outcomes, and the third is the point
+
+```
+pass      nothing moved that should not have
+fail      something moved that invalidates the number
+unknown   the check could not be made here
+```
+
+**`unknown` is not `pass`.** A CI runner without cgroup v2 has not proved its measurement was
+unthrottled; it has failed to look. Most tooling reports that as success, which is how a
+contaminated result acquires a clean bill of health. Whether it should stop your build is
+policy, so it is yours to set with `--strict`.
+
+Every finding carries the counter it was computed from. A failing job tells you which thing
+moved and by how much, not that the environment was unstable.
+
+## Sampling around, not before
+
+The state that matters is the state *during* the measurement. A machine checked beforehand and
+found quiet can start compiling something the moment the benchmark begins, which is exactly the
+case the competing-load check exists for. That is why the API is a context manager and why the
+CLI wraps your command rather than running before it.
+
+## Provenance
+
+`--json` writes the conditions the number was taken under: every reading, every verdict, the
+platform, and the checks that could not be made. Keep it next to the number. A benchmark result
+without the machine state it was taken on is not reproducible, it is just a number that was true
+once.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | the command succeeded and the measurement is valid |
+| 90 | the command succeeded but its measurement is invalid |
+| 91 | `--strict`, and a check could not be made |
+| anything else | the command's own exit code, which always wins |
+
+A broken benchmark and an untrustworthy one are different problems. Conflating them is how a
+flaky runner gets mistaken for a regression.
+
+## Status
+
+Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 33
+tests that run on any platform, because every probe reads from a relocatable filesystem root and
+the fixtures are real captures. The checks themselves are Linux, which is where CI runs.
+
+Known gaps, stated rather than hidden: Raspberry Pi thermal throttling lives behind
+`vcgencmd get_throttled` and is reported as unavailable here; macOS has no equivalent of most of
+these and is not attempted; the competing-load threshold is a default, not a law.
+
+## Licence
+
+MIT-0. Use it without attribution.
