@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[test]"
+      - run: pytest -q
+      # The probes are Linux-only but the suite is not: every probe reads from a
+      # relocatable root, so the fixtures describe a Linux machine on any host. If
+      # that ever stops being true this matrix is where it shows.
+      - name: the CLI runs on this platform
+        run: benchguard sample
+
+  dogfood-pass:
+    name: the Action passes on a quiet runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: guard a real measurement
+        id: guard
+        uses: ./
+        with:
+          run: python -c "sum(i*i for i in range(5_000_000))"
+          threads: 1
+          record: benchguard.json
+      - name: the verdict says valid
+        run: |
+          test "${{ steps.guard.outputs.valid }}" = "true"
+          python - <<'PY'
+          import json
+          d = json.load(open("benchguard.json"))
+          checks = {f["check"]: f["outcome"] for f in d["findings"]}
+          print(json.dumps(checks, indent=2))
+          assert not [c for c, o in checks.items() if o == "fail"], checks
+          # a hosted runner is a container, so the cgroup checks must be available
+          # here even though the thermal counters usually are not
+          assert checks["cgroup_cpu_throttle"] != "unknown", "no cgroup v2 on this runner?"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provenance
+          path: benchguard.json
+
+  dogfood-detects:
+    name: the Action fails on a throttled runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install -e .
+      # The point of the whole package. A gate that has never been shown to fire is
+      # not a gate, so run the same work under a CPU quota tight enough to throttle
+      # it and require exit 90.
+      - name: a quota-throttled measurement must be rejected
+        run: |
+          set +e
+          sudo systemd-run --scope -p CPUQuota=5% --slice=benchguard-test.slice \
+            benchguard run --threads 2 -- \
+            python -c "sum(i*i for i in range(40_000_000))"
+          code=$?
+          echo "benchguard exit: $code"
+          if [ "$code" -ne 90 ]; then
+            echo "::error::expected exit 90 (measurement invalid), got $code"
+            exit 1
+          fi
+          echo "the gate fired, as it must"

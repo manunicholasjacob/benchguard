@@ -60,7 +60,50 @@ class Probe:
         raise NotImplementedError
 
 
-class CgroupCpuThrottle(Probe):
+class CgroupProbe(Probe):
+    """Shared base: find the cgroup this process is actually in.
+
+    Reading `/sys/fs/cgroup/cpu.stat` directly reads the ROOT cgroup, which is not where a
+    throttled process usually lives. Under `systemd-run --scope`, inside a container, or under
+    any CI runner that nests its jobs, the quota that binds is on a descendant, and the root's
+    counters stay at zero while the job is being throttled hard. Found by trying to write a test
+    that throttles something on purpose.
+
+    cgroup v2 reports the path in `/proc/self/cgroup` as `0::/relative/path`.
+    """
+
+    def _cgroup_dir(self) -> str:
+        base = "sys/fs/cgroup"
+        text = self._read("proc/self/cgroup")
+        if not text:
+            return base
+        for line in text.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0":
+                rel = parts[2].strip()
+                if rel and rel != "/":
+                    candidate = os.path.join(base, rel.lstrip("/"))
+                    if os.path.isdir(self._path(candidate)):
+                        return candidate
+                break
+        return base
+
+    def _chain(self) -> List[str]:
+        """This cgroup and every ancestor up to the root, nearest first.
+
+        A quota binds at whichever level is tightest, so the effective limit is the minimum
+        along this chain, not whatever the leaf happens to say.
+        """
+        base = "sys/fs/cgroup"
+        here = self._cgroup_dir()
+        out = [here]
+        while here != base and here.startswith(base):
+            here = os.path.dirname(here)
+            out.append(here)
+        return out
+
+
+class CgroupCpuThrottle(CgroupProbe):
     """cgroup v2 `cpu.stat`: how long the kernel refused to schedule us.
 
     This is the check with the largest measured magnitude behind it. A CPU quota that binds
@@ -72,9 +115,12 @@ class CgroupCpuThrottle(Probe):
     name = "cgroup_cpu_throttle"
 
     def sample(self) -> Reading:
-        text = self._read("sys/fs/cgroup/cpu.stat")
+        cgroup = self._cgroup_dir()
+        text = self._read(cgroup, "cpu.stat")
+        if text is None and cgroup != "sys/fs/cgroup":
+            text = self._read("sys/fs/cgroup/cpu.stat")
         if text is None:
-            return Reading.missing(self.name, "no /sys/fs/cgroup/cpu.stat (not cgroup v2, or not Linux)")
+            return Reading.missing(self.name, "no cpu.stat (not cgroup v2, or not Linux)")
         fields = {}
         for line in text.splitlines():
             parts = line.split()
@@ -94,7 +140,7 @@ class CgroupCpuThrottle(Probe):
         )
 
 
-class CgroupCpuQuota(Probe):
+class CgroupCpuQuota(CgroupProbe):
     """cgroup v2 `cpu.max`: the quota itself, in cores.
 
     Static, so it is read once rather than differenced. Reported because a quota smaller than
@@ -106,22 +152,32 @@ class CgroupCpuQuota(Probe):
     name = "cgroup_cpu_quota"
 
     def sample(self) -> Reading:
-        text = self._read("sys/fs/cgroup/cpu.max")
-        if text is None:
-            return Reading.missing(self.name, "no /sys/fs/cgroup/cpu.max")
-        parts = text.split()
-        if not parts:
-            return Reading.missing(self.name, "cpu.max empty")
-        if parts[0] == "max":
-            return Reading(name=self.name, value=None, unit="cores", raw=text.strip(),
+        seen = False
+        tightest: Optional[float] = None
+        raw_of_tightest = ""
+        for d in self._chain():
+            text = self._read(d, "cpu.max")
+            if text is None:
+                continue
+            seen = True
+            parts = text.split()
+            if not parts or parts[0] == "max":
+                continue                      # unlimited at this level, keep walking up
+            try:
+                quota, period = float(parts[0]), float(parts[1])
+            except (ValueError, IndexError):
+                return Reading.missing(self.name, "cpu.max unparseable: %r" % text.strip())
+            if period <= 0:
+                return Reading.missing(self.name, "cpu.max period is zero")
+            cores = quota / period
+            if tightest is None or cores < tightest:
+                tightest, raw_of_tightest = cores, text.strip()
+        if not seen:
+            return Reading.missing(self.name, "no cpu.max in this cgroup or its ancestors")
+        if tightest is None:
+            return Reading(name=self.name, value=None, unit="cores", raw="max",
                            extra={"unlimited": 1.0})
-        try:
-            quota, period = float(parts[0]), float(parts[1])
-        except (ValueError, IndexError):
-            return Reading.missing(self.name, "cpu.max unparseable: %r" % text.strip())
-        if period <= 0:
-            return Reading.missing(self.name, "cpu.max period is zero")
-        return Reading(name=self.name, value=quota / period, unit="cores", raw=text.strip(),
+        return Reading(name=self.name, value=tightest, unit="cores", raw=raw_of_tightest,
                        extra={"unlimited": 0.0})
 
 
