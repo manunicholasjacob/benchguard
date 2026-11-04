@@ -1,5 +1,0 @@
-[console_scripts]
-benchguard = benchguard.cli:main
-
-[pytest11]
-benchguard = benchguard.pytest_plugin
