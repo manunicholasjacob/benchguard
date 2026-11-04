@@ -48,8 +48,10 @@ jobs:
           threads: 1
           record: benchguard.json
       - name: the verdict says valid
+        env:
+          BG_VALID: ${{ steps.guard.outputs.valid }}
         run: |
-          test "${{ steps.guard.outputs.valid }}" = "true"
+          test "$BG_VALID" = "true"
           python - <<'PY'
           import json
           d = json.load(open("benchguard.json"))
@@ -80,9 +82,14 @@ jobs:
       - name: a quota-throttled measurement must be rejected
         run: |
           set +e
+          # sudo does not inherit the PATH that pip installed benchguard onto, so
+          # resolve both executables here rather than inside the scope.
+          BG=$(command -v benchguard)
+          PY=$(command -v python)
+          echo "benchguard at $BG, python at $PY"
           sudo systemd-run --scope -p CPUQuota=5% --slice=benchguard-test.slice \
-            benchguard run --threads 2 -- \
-            python -c "sum(i*i for i in range(40_000_000))"
+            "$BG" run --threads 2 -- \
+            "$PY" -c "sum(i*i for i in range(40_000_000))"
           code=$?
           echo "benchguard exit: $code"
           if [ "$code" -ne 90 ]; then

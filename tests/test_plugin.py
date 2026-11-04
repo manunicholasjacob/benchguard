@@ -36,7 +36,15 @@ def write_test(tmp_path, root, after):
 
 
 def run_pytest(testfile, root, *extra):
-    argv = [sys.executable, "-m", "pytest", str(testfile), "-q", "-p", "benchguard.pytest_plugin",
+    """Run pytest the way a user would: installed, with the plugin auto-loaded.
+
+    No `-p benchguard.pytest_plugin` here. The package declares a `pytest11` entry point, so
+    once it is installed pytest loads the plugin itself, and passing `-p` as well registers it
+    twice: `ValueError: Plugin already registered under a different name`. That passed locally
+    only because the package was not installed there, and failed on every CI job that did the
+    normal thing. The suite therefore requires `pip install -e .`.
+    """
+    argv = [sys.executable, "-m", "pytest", str(testfile), "-q",
             "--benchguard-root", str(root)] + list(extra)
     return subprocess.run(argv, capture_output=True, text=True, cwd=REPO)
 

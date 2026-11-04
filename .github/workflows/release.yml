@@ -1,0 +1,60 @@
+name: release
+
+# Publishes to PyPI via Trusted Publishing: no API token is stored anywhere, PyPI
+# verifies the workflow identity instead. Before the first run, add a pending
+# publisher at https://pypi.org/manage/account/publishing/ for project `benchguard`,
+# owner `manunicholasjacob`, repo `benchguard`, workflow `release.yml`,
+# environment `pypi`.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # Never ship a tag whose tests do not pass. The release path runs them again
+      # rather than trusting that CI did, because a tag can point anywhere.
+      - run: pip install -e ".[test]"
+      - run: pytest -q
+
+      - name: the tag must match the version in pyproject
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(python -c "import tomllib,io;print(tomllib.load(io.open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$tag pyproject=$ver"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "$tag" != "$ver" ]; then
+            echo "::error::tag v$tag does not match pyproject version $ver"
+            exit 1
+          fi
+
+      - run: pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    environment: pypi
+    permissions:
+      id-token: write          # the whole point: OIDC instead of a stored token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
