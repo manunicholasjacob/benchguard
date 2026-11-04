@@ -45,8 +45,8 @@ are measured, not illustrative.
 | **CPU quota throttling** | `cpu.stat` `throttled_usec` rose during the measurement | A binding CPU quota costs about 50% of throughput on Cortex-A76 and about 64% on x86, and the throttle counters rise monotonically with the loss. A non-zero delta is not a risk of an effect, it is the effect. |
 | **Quota against threads** | the thread count exceeds the quota in cores | This is the configuration that produces the throttling above, so it turns "it was throttled" into "it was throttled because you asked for more threads than cores". |
 | **Thermal throttling** | core or package throttle counters rose | Self-evident once seen, and invisible otherwise. |
-| **Major page faults** | the process took any during the measurement | A run that took 11,404 major faults on a 272,000-page model was timing the page cache, not the model, and the wall-clock variance did not show it. |
-| **Competing load** | more than 10% of machine busy time belonged to other processes | A phone left idle and charging ran background application compilation during a measurement, cost 32% of a memory-bandwidth ceiling, and **every scatter-based health check on that run passed**. Load average cannot see this; it is a decayed average. The process table can. |
+| **Major page faults** | the process tree took any during the measurement | A run that took 11,404 major faults on a 272,000-page model was timing the page cache, not the model, and the wall-clock variance did not show it. |
+| **Competing load** | more than 10% of machine busy time belonged to processes outside this one and its children | A phone left idle and charging ran background application compilation during a measurement, cost 32% of a memory-bandwidth ceiling, and **every scatter-based health check on that run passed**. Load average cannot see this; it is a decayed average. The process table can. |
 | **Scaling governor** | cores disagree, or it is not pinned | A 37.5% clock cut cost 29 to 39%, so an unpinned clock makes the result a property of the scheduler. |
 
 ## Three outcomes, and the third is the point
@@ -93,9 +93,21 @@ flaky runner gets mistaken for a regression.
 
 ## Status
 
-Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 33
+Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 48
 tests that run on any platform, because every probe reads from a relocatable filesystem root and
 the fixtures are real captures. The checks themselves are Linux, which is where CI runs.
+
+CI does not only run those tests. It also uses the Action on this repository twice: once on a
+quiet runner, where the verdict must come back valid, and once under
+`systemd-run --scope -p CPUQuota=5%`, where it must exit 90. A gate that has never been shown to
+fire is not a gate. That second job reports 95% of wall clock throttled under a 0.05 core quota
+set in a descendant cgroup, which is the part no fixture can establish.
+
+It earned its place immediately. The first run found that the competing-load probe read
+`utime` and `stime`, which are the current process only, while `benchguard run` does all of its
+work in a child: every real command-line run was being rejected as contaminated by "other
+processes" that were its own benchmark. The unit suite could not have caught it, because the
+fake machines wrote the numbers the probe expected to read.
 
 Known gaps, stated rather than hidden: Raspberry Pi thermal throttling lives behind
 `vcgencmd get_throttled` and is reported as unavailable here; macOS has no equivalent of most of
