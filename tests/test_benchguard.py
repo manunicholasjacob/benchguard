@@ -26,8 +26,9 @@ def write(root, rel, text):
 
 
 def make_machine(root, *, throttled_usec=0, nr_throttled=0, quota="max 100000",
-                 thermal=None, governor="performance", majflt=0,
-                 cpu_busy=1000.0, cpu_idle=9000.0, own_busy=1000.0, ncpu=2):
+                 thermal=None, governor="performance", majflt=0, child_majflt=0,
+                 cpu_busy=1000.0, cpu_idle=9000.0, own_busy=1000.0, child_busy=0.0,
+                 ncpu=2):
     """A whole plausible machine under `root`. Every argument is something a test varies."""
     write(root, "sys/fs/cgroup/cpu.stat",
           "usage_usec 123456\nuser_usec 100000\nsystem_usec 23456\n"
@@ -45,9 +46,12 @@ def make_machine(root, *, throttled_usec=0, nr_throttled=0, quota="max 100000",
     # stime (14, 15) are fields[11] and [12]. `tail` is written after the state letter, so its
     # index is one lower again. Verified against proc(5).
     tail = [0] * 30
-    tail[8] = majflt            # -> fields[9]  -> stat field 12
-    tail[10] = int(own_busy)    # -> fields[11] -> stat field 14 (utime)
-    tail[11] = 0                # -> fields[12] -> stat field 15 (stime)
+    tail[8] = majflt              # -> fields[9]  -> stat field 12 (majflt)
+    tail[9] = int(child_majflt)   # -> fields[10] -> stat field 13 (cmajflt)
+    tail[10] = int(own_busy)      # -> fields[11] -> stat field 14 (utime)
+    tail[11] = 0                  # -> fields[12] -> stat field 15 (stime)
+    tail[12] = int(child_busy)    # -> fields[13] -> stat field 16 (cutime)
+    tail[13] = 0                  # -> fields[14] -> stat field 17 (cstime)
     write(root, "proc/self/stat",
           "1234 (python) R " + " ".join(str(x) for x in tail) + "\n")
     # user nice system idle iowait irq softirq

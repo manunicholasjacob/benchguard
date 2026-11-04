@@ -18,6 +18,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.9", "3.13"]
+        exclude:
+          # ubuntu-latest is Ubuntu 26.04 now and setup-python has no 3.9 x64 build for it
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          # so the oldest supported Python is tested on Linux on a pinned older image
+          - os: ubuntu-24.04
+            python: "3.9"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -44,7 +52,11 @@ jobs:
         id: guard
         uses: ./
         with:
-          run: python -c "sum(i*i for i in range(5_000_000))"
+          # Long enough that our own CPU time dominates the machine's busy jiffies. The first
+          # run used 5_000_000, finished in half a second, and was rejected for competing
+          # load: a measurement that short cannot establish whose CPU time it was, which is a
+          # true property of the check rather than a threshold to relax.
+          run: python -c "sum(i*i for i in range(120_000_000))"
           threads: 1
           record: benchguard.json
       - name: the verdict says valid

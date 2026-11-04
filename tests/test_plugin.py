@@ -43,10 +43,23 @@ def run_pytest(testfile, root, *extra):
     twice: `ValueError: Plugin already registered under a different name`. That passed locally
     only because the package was not installed there, and failed on every CI job that did the
     normal thing. The suite therefore requires `pip install -e .`.
+
+    The file argument is a bare name and the subprocess runs in the file's own directory,
+    rather than an absolute temp path while the cwd is the repository. Handed the absolute
+    form, the Windows Python 3.9 CI job went off and collected the drive root instead,
+    failing on `C:\\Documents and Settings` with WinError 5, while the Windows 3.13 job on
+    identical code passed. The two jobs resolve different pytest versions (8.4.2 and 9.2.0),
+    which is the obvious suspect, but that is not the cause: both versions take that exact
+    argv happily on a local Windows box, checked directly. So the trigger is something about
+    the runner that is not reproducible here, and the honest fix is to stop using the
+    construct rather than to claim a diagnosis. Running in the file's own directory also makes
+    rootdir the temp directory instead of leaving pytest to reconcile a cwd and an argument
+    on two unrelated trees, which is the most likely trigger of the two.
     """
-    argv = [sys.executable, "-m", "pytest", str(testfile), "-q",
+    testfile = Path(testfile)
+    argv = [sys.executable, "-m", "pytest", testfile.name, "-q",
             "--benchguard-root", str(root)] + list(extra)
-    return subprocess.run(argv, capture_output=True, text=True, cwd=REPO)
+    return subprocess.run(argv, capture_output=True, text=True, cwd=str(testfile.parent))
 
 
 @pytest.fixture

@@ -242,11 +242,17 @@ class ScalingGovernor(Probe):
 
 
 class MajorFaults(Probe):
-    """Major page faults taken by this process: field 12 of /proc/self/stat.
+    """Major page faults taken by this process and by the children it reaped.
 
     Major faults mean the measurement waited on storage. On a 272,000-page model a run that
     took 11,404 of them is not measuring the model, it is measuring the page cache, and the
     difference does not show up in wall-clock variance in any way an eye can catch.
+
+    majflt (field 12) covers this process; cmajflt (field 13) covers children it has waited
+    for. `benchguard run` does all of its work in a child, so without cmajflt the headline use
+    of this package would report "no major page faults" however hard the benchmark paged.
+    cmajflt only lands when the child is reaped, which the CLI does before it samples. A
+    benchmark that leaves a grandchild running is outside what this can see.
     """
 
     name = "major_faults"
@@ -260,12 +266,15 @@ class MajorFaults(Probe):
         if close < 0:
             return Reading.missing(self.name, "/proc/self/stat has no comm field")
         fields = text[close + 2:].split()
-        # after comm and state, majflt is the 10th remaining field (stat field 12)
+        # after comm and state, fields[k] is stat field 3+k: majflt (12) is fields[9] and
+        # cmajflt (13) is fields[10]
         try:
             majflt = float(fields[9])
+            cmajflt = float(fields[10])
         except (IndexError, ValueError):
             return Reading.missing(self.name, "/proc/self/stat too short for majflt")
-        return Reading(name=self.name, value=majflt, unit="faults")
+        return Reading(name=self.name, value=majflt + cmajflt, unit="faults",
+                       extra={"self": majflt, "children": cmajflt})
 
 
 class CompetingLoad(Probe):
@@ -275,6 +284,15 @@ class CompetingLoad(Probe):
     and charging ran background application compilation during the measurement, cost 32% of a
     memory-bandwidth ceiling, and every scatter-based health check on the run passed. Load
     average is useless for this because it is a decayed average; the process table is not.
+
+    "This process" has to mean the process tree, not the current process. utime and stime
+    (fields 14, 15) are this process alone, and `benchguard run` spends almost no CPU itself:
+    the benchmark is a child. Judged on utime and stime alone, every real CLI run reported
+    that ~100% of the machine's busy time belonged to other processes and rejected a perfectly
+    good measurement. The first CI run on a quiet hosted runner failed exactly that way, which
+    is the argument for dogfooding the Action rather than trusting the unit tests. cutime and
+    cstime (fields 16, 17) carry the reaped children, so the sum covers both the CLI, where
+    the work is a child, and the plugin and context manager, where it is in-process.
     """
 
     name = "competing_load"
@@ -298,11 +316,14 @@ class CompetingLoad(Probe):
         close = own.rfind(")")
         fields = own[close + 2:].split() if close >= 0 else []
         try:
-            own_busy = float(fields[11]) + float(fields[12])   # utime + stime
+            self_busy = float(fields[11]) + float(fields[12])    # utime + stime
+            child_busy = float(fields[13]) + float(fields[14])   # cutime + cstime
         except (IndexError, ValueError):
             return Reading.missing(self.name, "/proc/self/stat too short for utime/stime")
+        own_busy = self_busy + child_busy
         return Reading(name=self.name, value=busy, unit="jiffies",
-                       extra={"own_busy": own_busy, "idle": idle})
+                       extra={"own_busy": own_busy, "idle": idle,
+                              "self_busy": self_busy, "child_busy": child_busy})
 
 
 ALL_PROBES = [
