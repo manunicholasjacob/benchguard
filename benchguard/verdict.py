@@ -22,7 +22,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
-from .probes import Reading, sample_all
+from .probes import PiThrottle, Reading, sample_all
 
 PASS = "pass"
 FAIL = "fail"
@@ -148,13 +148,22 @@ def evaluate(before: Dict[str, Reading], after: Dict[str, Reading],
         d = _delta(pb, pa) or 0.0
         live = int(pa.extra.get("live_count", 0.0))
         if d > 0:
+            # Name them. "2 conditions" sends nobody anywhere, while under-voltage means buy a
+            # better supply and heat means improve the cooling, and the firmware distinguishes
+            # them in the same word.
+            fresh = [desc for bit, desc in sorted(PiThrottle.STICKY.items())
+                     if pa.extra.get("sticky_%d" % bit, 0.0)
+                     > pb.extra.get("sticky_%d" % bit, 0.0)]
             add("thermal_throttle", FAIL,
-                "the Pi firmware raised %.0f new throttling or under-voltage condition(s) during "
-                "the measurement (get_throttled %s)" % (d, pa.raw), d, "conditions")
+                "the Pi firmware recorded %s during the measurement (get_throttled %s)"
+                % (", ".join(fresh) if fresh else "%.0f new condition(s)" % d, pa.raw),
+                d, "conditions")
         elif live > 0:
+            now = [desc for bit, desc in sorted(PiThrottle.LIVE.items())
+                   if pa.extra.get("bits", 0.0) and int(pa.extra["bits"]) & (1 << bit)]
             add("thermal_throttle", FAIL,
-                "the Pi was still being throttled or capped when the measurement ended "
-                "(get_throttled %s)" % pa.raw, float(live), "conditions")
+                "the Pi was still capped as the measurement ended (%s; get_throttled %s)"
+                % (", ".join(now), pa.raw), float(live), "conditions")
         elif (pa.value or 0.0) > 0:
             add("thermal_throttle", PASS,
                 "no new Pi firmware throttling during the measurement, though %.0f condition(s) "

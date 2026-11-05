@@ -93,7 +93,7 @@ flaky runner gets mistaken for a regression.
 
 ## Status
 
-Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 66
+Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 68
 tests that run on any platform, because every probe reads from a relocatable filesystem root and
 the fixtures are real captures. The checks themselves are Linux, which is where CI runs.
 

@@ -125,7 +125,9 @@ def test_still_being_throttled_at_the_end_fails_even_with_no_new_sticky_bit(tmp_
                dict(PI, pi_throttled=LIVE_THROTTLE, cpu_busy=2000.0, own_busy=2000.0))
     f = finding(v, "thermal_throttle")
     assert f.outcome == FAIL
-    assert "still being throttled" in f.detail
+    assert "still capped" in f.detail
+    # and it says which condition, not just that there was one
+    assert "currently throttled" in f.detail
 
 
 def test_throttling_that_happened_earlier_today_does_not_fail_this_measurement(tmp_path):
@@ -140,13 +142,44 @@ def test_throttling_that_happened_earlier_today_does_not_fail_this_measurement(t
     assert v.ok()
 
 
-def test_under_voltage_is_treated_the_same_as_heat(tmp_path):
+def test_under_voltage_is_treated_the_same_as_heat_and_is_named_as_such(tmp_path):
     """On a Pi an undersized supply caps the clock exactly as a hot die does, and the firmware
-    reports both through this one word."""
+    reports both through this one word.
+
+    It has to say which, though. "2 conditions" sends nobody anywhere; under-voltage means buy
+    a better supply and heat means improve the cooling.
+    """
     v = around(str(tmp_path / "pi"),
                dict(PI, pi_throttled=0),
                dict(PI, pi_throttled=UNDERVOLT_OCCURRED, cpu_busy=2000.0, own_busy=2000.0))
-    assert finding(v, "thermal_throttle").outcome == FAIL
+    f = finding(v, "thermal_throttle")
+    assert f.outcome == FAIL
+    assert "under-voltage has occurred" in f.detail
+    assert "throttling has occurred" not in f.detail, "named a condition that did not happen"
+
+
+def test_two_conditions_arising_at_once_are_both_named(tmp_path):
+    v = around(str(tmp_path / "pi"),
+               dict(PI, pi_throttled=0),
+               dict(PI, pi_throttled=UNDERVOLT_OCCURRED | OCCURRED,
+                    cpu_busy=2000.0, own_busy=2000.0))
+    f = finding(v, "thermal_throttle")
+    assert f.outcome == FAIL
+    assert "under-voltage has occurred" in f.detail
+    assert "throttling has occurred" in f.detail
+
+
+def test_a_condition_already_set_before_the_run_is_not_named_as_new(tmp_path):
+    """The delta is what gets attributed to the run, so a bit that was already set must not be
+    reported as something this measurement caused."""
+    v = around(str(tmp_path / "pi"),
+               dict(PI, pi_throttled=UNDERVOLT_OCCURRED),
+               dict(PI, pi_throttled=UNDERVOLT_OCCURRED | OCCURRED,
+                    cpu_busy=2000.0, own_busy=2000.0))
+    f = finding(v, "thermal_throttle")
+    assert f.outcome == FAIL
+    assert "throttling has occurred" in f.detail
+    assert "under-voltage" not in f.detail, "blamed the run for a pre-existing condition"
 
 
 def test_sysfs_wins_when_a_machine_somehow_has_both(tmp_path):
