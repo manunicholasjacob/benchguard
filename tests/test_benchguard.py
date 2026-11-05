@@ -26,7 +26,8 @@ def write(root, rel, text):
 
 
 def make_machine(root, *, throttled_usec=0, nr_throttled=0, quota="max 100000",
-                 thermal=None, governor="performance", majflt=0, child_majflt=0,
+                 thermal=None, pi_throttled=None, governor="performance",
+                 majflt=0, child_majflt=0,
                  cpu_busy=1000.0, cpu_idle=9000.0, own_busy=1000.0, child_busy=0.0,
                  ncpu=2):
     """A whole plausible machine under `root`. Every argument is something a test varies."""
@@ -38,6 +39,12 @@ def make_machine(root, *, throttled_usec=0, nr_throttled=0, quota="max 100000",
         for cpu in range(ncpu):
             write(root, "sys/devices/system/cpu/cpu%d/thermal_throttle/core_throttle_count" % cpu,
                   "%d\n" % thermal)
+    if pi_throttled is not None:
+        # What `vcgencmd get_throttled` prints. A machine has sysfs counters or this, never
+        # both, so a fixture that sets `thermal` describes an x86 box and one that sets this
+        # describes a Pi.
+        write(root, "run/benchguard/vcgencmd_get_throttled",
+              "throttled=0x%x\n" % pi_throttled)
     for cpu in range(ncpu):
         gov = governor[cpu] if isinstance(governor, (list, tuple)) else governor
         write(root, "sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor" % cpu, gov + "\n")

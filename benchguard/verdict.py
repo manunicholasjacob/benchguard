@@ -127,17 +127,47 @@ def evaluate(before: Dict[str, Reading], after: Dict[str, Reading],
     else:
         add("cgroup_cpu_quota", PASS, "CPU quota %.2f cores" % (q.value or 0.0), q.value, "cores")
 
-    # -- thermal -------------------------------------------------------------------------
-    b, a = before["thermal_throttle"], after["thermal_throttle"]
-    if not a.available:
-        add("thermal_throttle", UNKNOWN, "thermal throttling not checked: " + a.why_unavailable)
-    else:
-        d = _delta(b, a) or 0.0
+    # -- thermal, from whichever source this machine has ---------------------------------
+    # One physical question, two sources, and no machine has both. x86 exposes the sysfs
+    # counters and has no vcgencmd; a Pi 5 has vcgencmd and no thermal_throttle directory at
+    # all, verified on 6.12.93+rpt-rpi-2712 rather than assumed. Reporting them as two separate
+    # checks made strict mode impossible to satisfy anywhere, and a test caught it at once: a
+    # fully described fake machine failed strict because the other architecture's source was
+    # absent. So this is one finding, and the detail says which source answered.
+    tb, ta = before["thermal_throttle"], after["thermal_throttle"]
+    pb, pa = before["pi_throttle"], after["pi_throttle"]
+    if ta.available:
+        d = _delta(tb, ta) or 0.0
         if d > 0:
             add("thermal_throttle", FAIL,
                 "thermal throttle counters rose by %.0f during the measurement" % d, d, "events")
         else:
-            add("thermal_throttle", PASS, "no thermal throttling during the measurement", 0.0, "events")
+            add("thermal_throttle", PASS, "no thermal throttling during the measurement", 0.0,
+                "events")
+    elif pa.available:
+        d = _delta(pb, pa) or 0.0
+        live = int(pa.extra.get("live_count", 0.0))
+        if d > 0:
+            add("thermal_throttle", FAIL,
+                "the Pi firmware raised %.0f new throttling or under-voltage condition(s) during "
+                "the measurement (get_throttled %s)" % (d, pa.raw), d, "conditions")
+        elif live > 0:
+            add("thermal_throttle", FAIL,
+                "the Pi was still being throttled or capped when the measurement ended "
+                "(get_throttled %s)" % pa.raw, float(live), "conditions")
+        elif (pa.value or 0.0) > 0:
+            add("thermal_throttle", PASS,
+                "no new Pi firmware throttling during the measurement, though %.0f condition(s) "
+                "had occurred earlier since boot (get_throttled %s)"
+                % (pa.value or 0.0, pa.raw), 0.0, "conditions")
+        else:
+            add("thermal_throttle", PASS,
+                "no Pi firmware throttling at any point since boot (get_throttled %s)" % pa.raw,
+                0.0, "conditions")
+    else:
+        add("thermal_throttle", UNKNOWN,
+            "thermal throttling not checked: %s, and %s" % (ta.why_unavailable,
+                                                            pa.why_unavailable))
 
     # -- governor ------------------------------------------------------------------------
     g = after["scaling_governor"]

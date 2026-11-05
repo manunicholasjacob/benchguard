@@ -214,6 +214,106 @@ class ThermalThrottle(Probe):
         return Reading(name=self.name, value=total, unit="events", extra=per_cpu)
 
 
+class PiThrottle(Probe):
+    """Raspberry Pi throttling, which is the one place the sysfs counters are not.
+
+    A Pi 5 has no `thermal_throttle` directory at all. Verified on hardware rather than assumed:
+    `/sys/devices/system/cpu/cpu0/thermal_throttle` does not exist on a Pi 5 running
+    6.12.93+rpt-rpi-2712. So `ThermalThrottle` reports "not checked" there, and a Pi is exactly
+    the machine where thermal throttling is most likely, which makes that the worst possible
+    place to have a blind spot.
+
+    The firmware answers `vcgencmd get_throttled` with a bitmask. The low bits are live state and
+    the high bits are sticky since boot:
+
+        0  under-voltage detected          16  under-voltage has occurred
+        1  Arm frequency capped            17  Arm frequency capping has occurred
+        2  currently throttled             18  throttling has occurred
+        3  soft temperature limit active   19  soft temperature limit has occurred
+
+    The sticky bits are set-only, so the number of them set never decreases and a rise across the
+    measurement means a new condition appeared while the benchmark was running. That is the only
+    part that can be attributed to the run. The live bits are reported too, because a measurement
+    that began with the board already capped is worth knowing about even though it is not a delta.
+
+    Under-voltage earns the same treatment as heat. On a Pi an undersized supply caps the clock
+    just as a hot die does, the firmware reports both through this one word, and nothing in sysfs
+    shows either.
+
+    This is the only probe that runs a subprocess instead of reading a file, so it takes an
+    injectable runner. The fake-machine fixtures cannot cover it on their own, which is the
+    mistake that let the child-process accounting bug through, so there is also a test that runs
+    against real firmware and skips everywhere else.
+    """
+
+    name = "pi_throttle"
+
+    STICKY = {
+        16: "under-voltage has occurred",
+        17: "Arm frequency capping has occurred",
+        18: "throttling has occurred",
+        19: "soft temperature limit has occurred",
+    }
+    LIVE = {
+        0: "under-voltage detected",
+        1: "Arm frequency capped",
+        2: "currently throttled",
+        3: "soft temperature limit active",
+    }
+
+    def __init__(self, root: str = "/", runner=None):
+        super().__init__(root)
+        if runner is not None:
+            self._runner = runner
+        elif self.root in ("/", ""):
+            self._runner = self._vcgencmd
+        else:
+            # A relocated root means the caller is describing some other machine, so running
+            # THIS machine's firmware would be a straightforward lie. It reads a captured
+            # answer from the tree instead, or reports that it could not look. Without this the
+            # suite would pass on a laptop and quietly change behaviour on a real Pi, where
+            # every fake machine would be answered by the firmware in the room.
+            self._runner = self._from_root
+
+    def _from_root(self) -> Optional[str]:
+        return self._read("run/benchguard/vcgencmd_get_throttled")
+
+    @staticmethod
+    def _vcgencmd() -> Optional[str]:
+        import shutil
+        import subprocess
+        exe = shutil.which("vcgencmd")
+        if exe is None:
+            return None
+        try:
+            done = subprocess.run([exe, "get_throttled"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if done.returncode != 0:
+            return None
+        return done.stdout.decode("utf-8", "replace").strip()
+
+    def sample(self) -> Reading:
+        text = self._runner()
+        if not text:
+            return Reading.missing(
+                self.name,
+                "vcgencmd get_throttled not available (not a Raspberry Pi, or vcgencmd missing)")
+        m = re.search(r"throttled=0x([0-9a-fA-F]+)", text)
+        if m is None:
+            return Reading.missing(
+                self.name, "could not parse vcgencmd output %r" % text[:60])
+        bits = int(m.group(1), 16)
+        sticky = [d for b, d in sorted(self.STICKY.items()) if bits & (1 << b)]
+        live = [d for b, d in sorted(self.LIVE.items()) if bits & (1 << b)]
+        extra = {"bits": float(bits), "live_count": float(len(live))}
+        for b in self.STICKY:
+            extra["sticky_%d" % b] = 1.0 if bits & (1 << b) else 0.0
+        return Reading(name=self.name, value=float(len(sticky)), unit="conditions",
+                       raw="0x%x" % bits, extra=extra)
+
+
 class ScalingGovernor(Probe):
     """The governor, and whether the cores disagree about it.
 
@@ -330,6 +430,7 @@ ALL_PROBES = [
     CgroupCpuThrottle,
     CgroupCpuQuota,
     ThermalThrottle,
+    PiThrottle,
     ScalingGovernor,
     MajorFaults,
     CompetingLoad,

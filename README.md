@@ -44,7 +44,7 @@ are measured, not illustrative.
 |---|---|---|
 | **CPU quota throttling** | `cpu.stat` `throttled_usec` rose during the measurement | A binding CPU quota costs about 50% of throughput on Cortex-A76 and about 64% on x86, and the throttle counters rise monotonically with the loss. A non-zero delta is not a risk of an effect, it is the effect. |
 | **Quota against threads** | the thread count exceeds the quota in cores | This is the configuration that produces the throttling above, so it turns "it was throttled" into "it was throttled because you asked for more threads than cores". |
-| **Thermal throttling** | core or package throttle counters rose | Self-evident once seen, and invisible otherwise. |
+| **Thermal throttling** | core or package throttle counters rose, or the Pi firmware reports a new throttling or under-voltage condition | Self-evident once seen, and invisible otherwise. One question with two sources, because no machine has both: x86 exposes the sysfs counters and has no `vcgencmd`, and a Pi 5 has `vcgencmd` and no `thermal_throttle` directory at all. |
 | **Major page faults** | the process tree took any during the measurement | A run that took 11,404 major faults on a 272,000-page model was timing the page cache, not the model, and the wall-clock variance did not show it. |
 | **Competing load** | more than 10% of machine busy time belonged to processes outside this one and its children | A phone left idle and charging ran background application compilation during a measurement, cost 32% of a memory-bandwidth ceiling, and **every scatter-based health check on that run passed**. Load average cannot see this; it is a decayed average. The process table can. |
 | **Scaling governor** | cores disagree, or it is not pinned | A 37.5% clock cut cost 29 to 39%, so an unpinned clock makes the result a property of the scheduler. |
@@ -93,7 +93,7 @@ flaky runner gets mistaken for a regression.
 
 ## Status
 
-Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 48
+Early. The library, the CLI, the pytest plugin and the Action all work and are covered by 66
 tests that run on any platform, because every probe reads from a relocatable filesystem root and
 the fixtures are real captures. The checks themselves are Linux, which is where CI runs.
 
@@ -109,9 +109,14 @@ work in a child: every real command-line run was being rejected as contaminated 
 processes" that were its own benchmark. The unit suite could not have caught it, because the
 fake machines wrote the numbers the probe expected to read.
 
-Known gaps, stated rather than hidden: Raspberry Pi thermal throttling lives behind
-`vcgencmd get_throttled` and is reported as unavailable here; macOS has no equivalent of most of
-these and is not attempted; the competing-load threshold is a default, not a law.
+Known gaps, stated rather than hidden: macOS has no equivalent of most of these and is not
+attempted; the competing-load threshold is a default, not a law. Raspberry Pi throttling used to
+be listed here as unavailable and now is not, because `vcgencmd get_throttled` is read, its
+sticky bits are compared across the measurement so only a condition that arose during the run
+counts against it, and a board still being capped as the run ends fails whether or not a bit
+changed. That probe is the only one that runs a subprocess, so it refuses to consult the local
+firmware when the filesystem root has been relocated: otherwise every fake machine in the test
+suite would be answered by the real board in the room.
 
 ## Licence
 
